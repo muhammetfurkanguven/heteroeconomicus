@@ -1,0 +1,185 @@
+#Fama-French modelin önerdiği small-value stocksla portfolio optimization
+#24 hisse seçildi. 24'ün optimum olduğunu gösteren ve Fama-French'in ilgili çalışması da maildeki ekte.
+
+
+
+
+#data importer
+library(quantmod)
+#solver package
+library(quadprog)
+#Citigroup pure value index data's smallest 24 assets, according to market cap
+symbol_list=c("CTVA", 
+              "DOW",
+              "NWS", 
+              "DD", 
+              "CCL", 
+              "HP", 
+              "MYL", 
+              "TXT", 
+              "HPQ", 
+              "CNP", 
+              "DAL", 
+              "DUK", 
+              "EVRG", 
+              "GPS", 
+              "AMG", 
+              "WBA", 
+              "NCLH", 
+              "ED", 
+              "HBAN", 
+              "LYB", 
+              "BBT", 
+              "ALK", 
+              "ANTM", 
+              "AAL" 
+)
+#historical data for these assets
+getSymbols(symbol_list,from="2019-06-01",to="2019-12-01")
+#YAHOO finance target return calculations, (alpha values cannot be found directly, relies on assumptions, we searched for expert opinions by this)
+expected_return <- c(CTVA.Adjusted=0.179666279, 
+                     DOW.Adjusted = 0.0466991748,
+                     NWS.Adjusted = 0.0385756677,
+                     DD.Adjusted = 0.261092947,
+                     CCL.Adjusted = 0.0546978386,
+                     HP.Adjusted = 0.0935269505,
+                     MYL.Adjusted =0.347780679,
+                     TXT.Adjusted = 0.274740172,
+                     HPQ.Adjusted =0.000975609756,
+                     CNP.Adjusted =0.144742103,
+                     DAL.Adjusted = 0.176533907,
+                     DUK.Adjusted = 0.0765443151,
+                     EVRG.Adjusted =0.0446801671,
+                     GPS.Adjusted =-0.00426309379,
+                     AMG.Adjusted =0.0498696991,
+                     WBA.Adjusted = -0.0285277636,
+                     NCLH.Adjusted = 0.173010381,
+                     ED.Adjusted = 0.0526681329,
+                     HBAN.Adjusted = -0.0124264225,
+                     LYB.Adjusted =0.104338395,
+                     BBT.Adjusted =0.0359513274,
+                     ALK.Adjusted =0.14233255,
+                     ANTM.Adjusted =0.17524718,
+                     AAL.Adjusted =0.337813295)
+#adjusted price column of all assets
+adjusted_prices <-cbind(CTVA[,6], 
+                        DOW[,6],
+                        NWS[,6] ,
+                        DD[,6] ,
+                        CCL[,6] ,
+                        HP[,6] ,
+                        MYL[,6] ,
+                        TXT[,6] ,
+                        HPQ[,6] ,
+                        CNP[,6] ,
+                        DAL[,6] ,
+                        DUK[,6] ,
+                        EVRG[,6] ,
+                        GPS[,6] ,
+                        AMG[,6] ,
+                        WBA[,6] ,
+                        NCLH[,6] ,
+                        ED[,6] ,
+                        HBAN[,6], 
+                        LYB[,6] ,
+                        BBT[,6] ,
+                        ALK[,6] ,
+                        ANTM[,6] ,
+                        AAL[,6] 
+)
+#empty returns definition
+returns <- NULL
+#for constructing return matrix, all assest are on one column
+for(i in 1:24){
+  returns <- cbind(returns,dailyReturn(adjusted_prices[,i]))
+}
+#returns as matrix, to calculate only covmat, because it is different from expected returns
+returns <- matrix(returns,ncol=24)
+#covariance calculations for every assets regarding all returns of them, explaining correlations
+cov_matrix <- cov(returns)
+#expected retuns in matrix form
+expected_return_matrix <- matrix(expected_return,nrow = 24,ncol=1)
+#arbitrary weight assignments
+A.Equality <- matrix(c(seq(0,1,length.out=24)), ncol=1)
+#constraint matrix: weights, expected return values, weights are equal to 1, minus values of expected returns, only for maximizing(solve,QP only minimizes, multiplying by -1 gets rid of problem)
+Amat <- cbind(A.Equality, expected_return_matrix, diag(24), -diag(24))
+#constraint vector of positions, only in the interval of -1 to 1
+bvec <- c(1, 0, rep(0,times=24), rep(-1,times= 24))
+#double function optimizer, cov mat minimized with respect to constraint Amat diag(24), expectedreturns minimized with respect to -diag(24)[which means to maximize], positions as bvec, for 24 assets
+qp <- solve.QP(cov_matrix, expected_return_matrix, Amat, bvec,meq =2)
+qp
+#optimal returns of min var
+portfolio_return <- qp$value
+#optimal portfolio weights for min var
+portfolio_weights <- matrix(qp$solution,ncol = 1)
+#covariance matrix times weights to calculate variance, square of volatility
+volatility_square <- t(portfolio_weights)%%cov_matrix%%portfolio_weights
+volatility <- sqrt(volatility_square)
+#minimum variance portfolio is found
+
+#preparation for portfolio optimization, variabel definitions
+library(tseries)
+#average returns
+averet <- matrix(expected_return,nrow=1)
+#covariance matrix i.e. risk, volatility
+rcov <- cov(returns)
+#arbitrary initial assignment of target
+target.return <- 0.5
+#optimal portfolio function
+port.sol = portfolio.optim(x = averet, pm = target.return,
+                           covmat = rcov, shorts = T, reslow = rep(-1,24), reshigh = rep(1,24))
+
+
+volatilitymaxreturn <- sqrt(t(port.sol$pw)%%rcov%%port.sol$pw)
+
+
+#efficientfrontiercalculation function
+
+effFrontier = function (averet=averet, rcov, nports =100, shorts=T, wmax=1)
+{
+  mxret = max(abs(averet))
+  mnret = -mxret
+  n.assets = ncol(averet)
+  reshigh = rep(wmax,n.assets)
+  if( shorts )
+  {
+    reslow = rep(-wmax,n.assets)
+  } else {
+    reslow = rep(0,n.assets)
+  }
+  min.rets = seq(mnret, mxret, len = nports)
+  vol = rep(NA, nports)
+  ret = rep(NA, nports)
+  for (k in 1:nports)
+  {
+    port.sol = NULL
+    try(port.sol <- portfolio.optim(x=averet, pm=min.rets[k], covmat=rcov,
+                                    reshigh=reshigh, reslow=reslow,shorts=shorts),silent=T)
+    if ( !is.null(port.sol) )
+    {
+      vol[k] = sqrt(as.vector(port.sol$pw %% rcov %% port.sol$pw))
+      ret[k] = averet %*% port.sol$pw
+    }
+  }
+  return(list(vol = vol, ret = ret))
+}
+
+#efficient frontier volatility and return values
+effFrontier(averet=averet, rcov, nports =100, shorts=T, wmax=1)
+
+#####
+install.packages("IntroCompFinR", repos="http://R-Forge.R-project.org")
+library(IntroCompFinR)
+maximizedsharpe <- tangency.portfolio(averet,rcov,0,shorts=T)
+
+
+#SR maximized weights
+maximizedsharpe
+
+#Plot
+library(ggplot2)
+efficientfrontierfortenpercent <- effFrontier(averet,rcov,shorts=T,wmax = 1)
+efficientfrontierfortenpercent <- data.frame(returns=efficientfrontierfortenpercent$ret,volatility=efficientfrontierfortenpercent$vol)
+ggplot(efficientfrontierfortenpercent,aes(x=volatility,y=returns))+geom_point()+xlim(0.005,0.02)+ylim(-0.4,0.5)
+maximized_sharpe_ratio <- data.frame(stock=symbol_list,weights=maximizedsharpe$weights)
+ggplot(maximized_sharpe_ratio,aes(x=stock,y=weights))+geom_point()
